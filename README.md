@@ -31,7 +31,7 @@ $anonymized = $anonymizer->anonymizeObject($data);
 ### Anonymizer Class
 ```php
 class Anonymizer {
-    public function __construct(string $url);
+    public function __construct(Keys|string $keys);
     public function updateKeys(): void;
     public function anonymizeObject(object|array $data): object|array;
 }
@@ -75,6 +75,13 @@ Keys with `[]` suffix indicate array fields that should have all elements anonym
   'numbers' => [123, 456] → [789, 012]
   ```
 
+## Testing
+
+```bash
+composer install
+vendor/bin/phpunit
+```
+
 ## CLI
 
 Update keys via command line:
@@ -88,7 +95,11 @@ data-scrubber/
 ├── src/
 │   ├── Anonymizer.php
 │   └── Keys.php
+├── tests/
+│   ├── AnonymizerTest.php
+│   └── KeysTest.php
 ├── bin/
 │   └── updateKeys.php
-└── composer.json
+├── composer.json
+└── phpunit.xml.dist
 ```

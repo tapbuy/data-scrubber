@@ -1,11 +1,17 @@
 #!/usr/bin/env php
 <?php
 
-require __DIR__ . '/../src/Keys.php';
+// Support both: installed as a Composer dependency and standalone dev usage.
+foreach ([__DIR__ . '/../../../autoload.php', __DIR__ . '/../vendor/autoload.php'] as $autoload) {
+    if (file_exists($autoload)) {
+        require $autoload;
+        break;
+    }
+}
 
 use Tapbuy\DataScrubber\Keys;
 
-$url = $argv[1];
+$url = $argv[1] ?? '';
 
 if (empty($url)) {
     echo "Usage: php bin/updateKeys.php <url>\n";
@@ -17,6 +23,6 @@ try {
     $fetcher->fetchKeys();
     echo "Keys updated\n";
 } catch (Exception $e) {
-    echo "Error : " . $e->getMessage() . "\n";
+    echo "Error: " . $e->getMessage() . "\n";
     exit(1);
 }
