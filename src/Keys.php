@@ -6,19 +6,22 @@ namespace Tapbuy\DataScrubber;
 
 class Keys
 {
+    private const CACHE_TTL = 86400; // 1 day in seconds
+
     private array $keys = [];
     private string $url;
     private string $file;
 
     /**
      * @param string $url HTTPS URL exposing the keys API endpoint
+     * @param string|null $cachePath Absolute path to the cache file. Defaults to var/data-scrubbing-keys.json inside the package.
      * @throws \InvalidArgumentException if the URL is not a valid HTTP/HTTPS URL
      */
-    public function __construct(string $url)
+    public function __construct(string $url, ?string $cachePath = null)
     {
         $this->validateUrl($url);
         $this->url = $url;
-        $this->file = __DIR__ . '/../var/data-scrubbing-keys.json';
+        $this->file = $cachePath ?? __DIR__ . '/../var/data-scrubbing-keys.json';
         $this->loadFromCache();
     }
 
@@ -63,7 +66,7 @@ class Keys
     }
 
     /**
-     * Load keys from the local cache file. Falls back to fetchKeys() if the cache is absent or corrupt.
+     * Load keys from the local cache file. Falls back to fetchKeys() if the cache is absent, corrupt, or stale.
      */
     private function loadFromCache(): void
     {
@@ -76,6 +79,11 @@ class Keys
         $decoded = json_decode($content, true);
 
         if (json_last_error() !== JSON_ERROR_NONE || !is_array($decoded)) {
+            $this->fetchKeys();
+            return;
+        }
+
+        if (time() - filemtime($this->file) > self::CACHE_TTL) {
             $this->fetchKeys();
             return;
         }
