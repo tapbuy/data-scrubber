@@ -1,48 +1,34 @@
 <?php
 
-namespace Tapbuy\DataScrubber;
+declare(strict_types=1);
 
-use Tapbuy\DataScrubber\Keys;
+namespace Tapbuy\DataScrubber;
 
 class Anonymizer
 {
-    private $keys;
-    private $url;
+    private array $keys;
+    private Keys $keysObject;
 
     /**
-     * Fetch keys from the API
-     * @param string $url
+     * @param Keys|string $keys A Keys instance or a URL string for backward compatibility
      */
-    public function __construct(string $url)
+    public function __construct(Keys|string $keys)
     {
-        $this->url = $url;
-        $this->keys = [];
-        $this->setKeys();
+        $this->keysObject = $keys instanceof Keys ? $keys : new Keys($keys);
+        $this->keys = $this->keysObject->getKeys();
     }
 
     /**
-     * Update the keys
+     * Force-refresh the anonymization keys from the API.
      */
     public function updateKeys(): void
     {
-        $keys = new Keys($this->url);
-        $keys->fetchKeys();
-        $this->setKeys();
+        $this->keysObject->fetchKeys();
+        $this->keys = $this->keysObject->getKeys();
     }
 
     /**
-     * Set the keys to anonymize
-     * @return void
-     */
-    private function setKeys(): void
-    {
-        $keys = new Keys($this->url);
-        $this->keys = $keys->getKeys();
-    }
-
-    /**
-     * Anonymize an object or array recursively
-     * @param object|array $data
+     * Anonymize an object or array recursively.
      */
     public function anonymizeObject(object|array $data): object|array
     {
@@ -50,86 +36,121 @@ class Anonymizer
     }
 
     /**
-     * Anonymize a key in an object or array if matches the keys from the API
-     * @param mixed $data
+     * Anonymize a value or data structure recursively.
      */
-    public function anonymize(mixed $data): mixed
+    private function anonymize(mixed $data): mixed
     {
         if (is_object($data)) {
             $anonymizedData = new \stdClass();
             foreach ($data as $key => $value) {
-                if (is_object($value) || is_array($value)) {
+                if (is_array($value) && $this->isArrayKeyMatch($key)) {
+                    $anonymizedData->$key = $this->anonymizeArray($value);
+                } elseif (is_object($value) || is_array($value)) {
                     $anonymizedData->$key = $this->anonymize($value);
+                } elseif ($this->isKeyMatch($key)) {
+                    $anonymizedData->$key = $this->anonymizeValue($value);
                 } else {
-                    if (in_array(strtolower(str_replace('[]', '', $key)), $this->keys)) {
-                        $anonymizedData->$key = $this->anonymizeValue($value);
-                    } else {
-                        $anonymizedData->$key = $this->anonymize($value);
-                    }
+                    $anonymizedData->$key = $value;
                 }
             }
             return $anonymizedData;
-        } elseif (is_array($data)) {
+        }
+
+        if (is_array($data)) {
             $result = [];
             foreach ($data as $key => $value) {
-                if (is_array($value) && in_array(strtolower($key . '[]'), $this->keys)) {
+                if (is_array($value) && $this->isArrayKeyMatch((string) $key)) {
                     $result[$key] = $this->anonymizeArray($value);
+                } elseif (is_object($value) || is_array($value)) {
+                    $result[$key] = $this->anonymize($value);
+                } elseif ($this->isKeyMatch((string) $key)) {
+                    $result[$key] = $this->anonymizeValue($value);
                 } else {
-                    if (is_object($value) || is_array($value)) {
-                        $result[$key] = $this->anonymize($value);
-                    } else {
-                        if (in_array(strtolower($key), $this->keys) || in_array($key, $this->keys)) {
-                            $result[$key] = $this->anonymizeValue($value);
-                        } else {
-                            $result[$key] = $this->anonymize($value);
-                        }
-                    }
+                    $result[$key] = $value;
                 }
             }
             return $result;
-        } else {
-            return $data;
         }
+
+        return $data;
     }
 
     /**
-     * Anonymize a string keeping the length and the type
-     * @param mixed $value
+     * Anonymize a scalar value preserving its type and length.
      */
-    public function anonymizeValue(mixed $value): mixed
+    private function anonymizeValue(mixed $value): mixed
     {
         if (is_string($value)) {
-            return str_repeat('*', strlen($value));
-        } elseif (is_numeric($value)) {
+            return str_repeat('*', mb_strlen($value));
+        }
+
+        if (is_int($value) || is_float($value)) {
             return $this->anonymizeNumeric($value);
         }
+
         return $value;
     }
 
     /**
-     * Anonymize a numeric value keeping the length
-     * @param int|float $value
+     * Anonymize a numeric value preserving its type, digit count, and decimal precision.
      */
-    public function anonymizeNumeric(int|float $value): int|float
+    private function anonymizeNumeric(int|float $value): int|float
     {
-        $length = strlen((string)$value);
-        $anonymizedNumber = '';
-        for ($i = 0; $i < $length; $i++) {
-            $anonymizedNumber .= rand(0, 9);
+        if (is_float($value)) {
+            $str = (string) $value;
+            if (str_contains($str, '.')) {
+                [$intPart, $decPart] = explode('.', $str, 2);
+                return (float) ($this->randomDigitString(strlen($intPart), true) . '.' . $this->randomDigitString(strlen($decPart)));
+            }
+            return (float) $this->randomDigitString(strlen($str), true);
         }
-        return is_float($value) ? (float)$anonymizedNumber : (int)$anonymizedNumber;
+
+        return (int) $this->randomDigitString(strlen((string) $value), true);
     }
 
     /**
-     * Anonymize an array
-     * @param array $value
+     * Anonymize all elements of an array.
      */
-    public function anonymizeArray(array $value): array
+    private function anonymizeArray(array $value): array
     {
-        $anonymizedArray = [];
-        foreach ($value as $item) {
-            $anonymizedArray[] = $this->anonymizeValue($item);
+        return array_map([$this, 'anonymizeValue'], $value);
+    }
+
+    /**
+     * Check whether a plain key matches any entry in the anonymization key list.
+     */
+    private function isKeyMatch(string $key): bool
+    {
+        return in_array(strtolower(str_replace('[]', '', $key)), $this->keys, true);
+    }
+
+    /**
+     * Check whether an array-typed key (key[]) matches any entry in the anonymization key list.
+     */
+    private function isArrayKeyMatch(string $key): bool
+    {
+        return in_array(strtolower($key . '[]'), $this->keys, true);
+    }
+
+    /**
+     * Generate a string of random decimal digits.
+     *
+     * @param bool $noLeadingZero When true the first digit is guaranteed to be 1-9.
+     */
+    private function randomDigitString(int $length, bool $noLeadingZero = false): string
+    {
+        if ($length <= 0) {
+            return '';
         }
-        return $anonymizedArray;
+
+        $result = '';
+        if ($noLeadingZero && $length > 1) {
+            $result .= random_int(1, 9);
+            $length--;
+        }
+        for ($i = 0; $i < $length; $i++) {
+            $result .= random_int(0, 9);
+        }
+        return $result;
     }
 }

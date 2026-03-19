@@ -9,3 +9,6 @@
 .DS_Store
 
 var/*
+!var/.gitkeep
+
+.phpunit.result.cache
