@@ -10,3 +10,5 @@
 
 var/*
 !var/.gitkeep
+
+.phpunit.result.cache
