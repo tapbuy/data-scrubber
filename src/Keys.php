@@ -61,7 +61,9 @@ class Keys
             throw new \RuntimeException('Failed to load keys: unexpected API response');
         }
 
-        file_put_contents($this->file, json_encode($json['data']), LOCK_EX);
+        if (file_put_contents($this->file, json_encode($json['data']), LOCK_EX) === false) {
+            throw new \RuntimeException('Failed to write keys cache to: ' . $this->file);
+        }
         $this->keys = $json['data'];
     }
 
@@ -76,6 +78,10 @@ class Keys
         }
 
         $content = file_get_contents($this->file);
+        if ($content === false) {
+            $this->fetchKeys();
+            return;
+        }
         $decoded = json_decode($content, true);
 
         if (json_last_error() !== JSON_ERROR_NONE || !is_array($decoded)) {
@@ -99,6 +105,9 @@ class Keys
     private function validateUrl(string $url): void
     {
         $parsed = parse_url($url);
+        if ($parsed === false) {
+            throw new \InvalidArgumentException('Keys URL must be a valid HTTP or HTTPS URL.');
+        }
         $scheme = $parsed['scheme'] ?? '';
         $host   = $parsed['host']   ?? '';
 

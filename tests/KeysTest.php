@@ -74,94 +74,65 @@ class KeysTest extends TestCase
 
     public function testLoadFromCacheFallsBackToFetchKeysWhenFileIsMissing(): void
     {
-        $mock = $this->getMockBuilder(Keys::class)
-            ->setConstructorArgs(['https://example.com/keys'])
-            ->onlyMethods(['fetchKeys'])
-            ->getMock();
-
         $tmpFile = sys_get_temp_dir() . '/keys_test_missing_' . uniqid() . '.json';
-        // Ensure file doesn't exist
         if (file_exists($tmpFile)) {
             unlink($tmpFile);
         }
 
-        $reflection = new \ReflectionClass(Keys::class);
-
-        $fileProp = $reflection->getProperty('file');
-        $fileProp->setValue($mock, $tmpFile);
+        $mock = $this->getMockBuilder(Keys::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['fetchKeys'])
+            ->getMock();
 
         $mock->expects($this->once())->method('fetchKeys');
-
-        $loadFromCache = $reflection->getMethod('loadFromCache');
-        $loadFromCache->invoke($mock);
+        $mock->__construct('https://example.com/keys', $tmpFile);
     }
 
     public function testLoadFromCacheFallsBackToFetchKeysWhenFileIsEmpty(): void
     {
-        $mock = $this->getMockBuilder(Keys::class)
-            ->setConstructorArgs(['https://example.com/keys'])
-            ->onlyMethods(['fetchKeys'])
-            ->getMock();
-
         $tmpFile = tempnam(sys_get_temp_dir(), 'keys_test_');
         file_put_contents($tmpFile, '');
 
-        $reflection = new \ReflectionClass(Keys::class);
-
-        $fileProp = $reflection->getProperty('file');
-        $fileProp->setValue($mock, $tmpFile);
+        $mock = $this->getMockBuilder(Keys::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['fetchKeys'])
+            ->getMock();
 
         $mock->expects($this->once())->method('fetchKeys');
-
-        $loadFromCache = $reflection->getMethod('loadFromCache');
-        $loadFromCache->invoke($mock);
+        $mock->__construct('https://example.com/keys', $tmpFile);
 
         @unlink($tmpFile);
     }
 
     public function testLoadFromCacheFallsBackToFetchKeysWhenJsonIsInvalid(): void
     {
-        $mock = $this->getMockBuilder(Keys::class)
-            ->setConstructorArgs(['https://example.com/keys'])
-            ->onlyMethods(['fetchKeys'])
-            ->getMock();
-
         $tmpFile = tempnam(sys_get_temp_dir(), 'keys_test_');
         file_put_contents($tmpFile, '{not valid json');
 
-        $reflection = new \ReflectionClass(Keys::class);
-
-        $fileProp = $reflection->getProperty('file');
-        $fileProp->setValue($mock, $tmpFile);
+        $mock = $this->getMockBuilder(Keys::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['fetchKeys'])
+            ->getMock();
 
         $mock->expects($this->once())->method('fetchKeys');
-
-        $loadFromCache = $reflection->getMethod('loadFromCache');
-        $loadFromCache->invoke($mock);
+        $mock->__construct('https://example.com/keys', $tmpFile);
 
         @unlink($tmpFile);
     }
 
     public function testLoadFromCacheDoesNotCallFetchKeysWhenCacheIsValid(): void
     {
-        $mock = $this->getMockBuilder(Keys::class)
-            ->setConstructorArgs(['https://example.com/keys'])
-            ->onlyMethods(['fetchKeys'])
-            ->getMock();
-
         $expectedKeys = ['email', 'phone'];
         $tmpFile = tempnam(sys_get_temp_dir(), 'keys_test_');
         file_put_contents($tmpFile, json_encode($expectedKeys));
 
-        $reflection = new \ReflectionClass(Keys::class);
-
-        $fileProp = $reflection->getProperty('file');
-        $fileProp->setValue($mock, $tmpFile);
+        $mock = $this->getMockBuilder(Keys::class)
+            ->disableOriginalConstructor()
+            ->onlyMethods(['fetchKeys'])
+            ->getMock();
 
         $mock->expects($this->never())->method('fetchKeys');
-
-        $loadFromCache = $reflection->getMethod('loadFromCache');
-        $loadFromCache->invoke($mock);
+        $mock->__construct('https://example.com/keys', $tmpFile);
 
         $this->assertSame($expectedKeys, $mock->getKeys());
 
@@ -173,44 +144,21 @@ class KeysTest extends TestCase
     /**
      * Create a Keys instance with a pre-populated temp cache file so the
      * constructor never hits the network.
+     *
+     * var/data-scrubbing-keys.json is gitignored (only a .gitkeep is committed),
+     * so tests must supply an explicit cache path via the second constructor arg.
      */
     private function createKeysWithCache(string $url, array $cacheData = ['email']): Keys
     {
         $tmpFile = tempnam(sys_get_temp_dir(), 'keys_test_');
         file_put_contents($tmpFile, json_encode($cacheData));
 
-        // We need to set the cache file path BEFORE the constructor reads it.
-        // Since the constructor hardcodes the path, we use a partial mock that
-        // stubs fetchKeys (so it won't curl if loadFromCache falls through)
-        // and then override the file property.
-        //
-        // But the constructor flow is: validateUrl → set file → loadFromCache.
-        // We can't intercept between "set file" and "loadFromCache" without
-        // bypassing the constructor entirely.
-        //
-        // Alternative: The real cache file (var/data-scrubbing-keys.json)
-        // exists in the repo, so the constructor will load from it and never
-        // call fetchKeys. For URL validation tests this is fine.
-        //
-        // For controlled cache data, we construct normally (loads repo cache),
-        // then swap the file and re-trigger loadFromCache via reflection.
+        // Pass the pre-populated temp file as the cache path; the constructor
+        // will load from it directly without making any network request.
+        $keys = new Keys($url, $tmpFile);
 
-        $mock = $this->getMockBuilder(Keys::class)
-            ->setConstructorArgs([$url])
-            ->onlyMethods(['fetchKeys'])
-            ->getMock();
-
-        $reflection = new \ReflectionClass(Keys::class);
-
-        $fileProp = $reflection->getProperty('file');
-        $fileProp->setValue($mock, $tmpFile);
-
-        $loadFromCache = $reflection->getMethod('loadFromCache');
-        $loadFromCache->invoke($mock);
-
-        // Clean up temp file
         @unlink($tmpFile);
 
-        return $mock;
+        return $keys;
     }
 }
