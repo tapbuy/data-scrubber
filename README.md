@@ -31,7 +31,12 @@ $anonymized = $anonymizer->anonymizeObject($data);
 ### Anonymizer Class
 ```php
 class Anonymizer {
-    public function __construct(Keys|string $keys);
+    const REDACTED = '<REDACTED>';
+    // $redactWith: when null (default) matched values are masked with `*`;
+    //              when set (e.g. self::REDACTED) they are replaced with that placeholder.
+    // $hashEmails: when true, email values are replaced with their unsalted SHA-256 hash
+    //              instead of being masked/redacted. Defaults to false.
+    public function __construct(Keys|string $keys, ?string $redactWith = null, bool $hashEmails = false);
     public function updateKeys(): void;
     public function anonymizeObject(object|array $data): object|array;
 }
@@ -59,6 +64,8 @@ Keys with `[]` suffix indicate array fields that should have all elements anonym
 
 ## Anonymization Rules
 
+By default, matched values are masked:
+
 - Strings: Replaced with `*` of same length
   ```php
   "John Doe" → "********"
@@ -68,6 +75,22 @@ Keys with `[]` suffix indicate array fields that should have all elements anonym
   ```php
   12345 → 98765
   123.45 → 987.65
+  ```
+
+- Redaction mode (`$redactWith`): replace matched values wholesale with a placeholder
+  instead of masking/randomizing them
+  ```php
+  $anonymizer = new Anonymizer($keys, Anonymizer::REDACTED);
+  "John Doe" → "<REDACTED>"
+  12345      → "<REDACTED>"
+  ```
+
+- Email hashing (`$hashEmails`): replace email values with their unsalted SHA-256 hash
+  (a stable, one-way identifier) instead of masking/redacting them. Takes precedence
+  over the rules above for values that are valid emails.
+  ```php
+  $anonymizer = new Anonymizer($keys, null, true);
+  "john@example.com" → "836f82db99121b3481011f16b49dfa5fbc714a0d1b1b9f784a1ebbbf5b39577f"
   ```
 
 - Arrays: If key marked with [], all elements anonymized
