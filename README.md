@@ -36,7 +36,10 @@ class Anonymizer {
     //              when set (e.g. self::REDACTED) they are replaced with that placeholder.
     // $hashEmails: when true, email values are replaced with their unsalted SHA-256 hash
     //              instead of being masked/redacted. Defaults to false.
-    public function __construct(Keys|string $keys, ?string $redactWith = null, bool $hashEmails = false);
+    // $matchLeaf:  when true, a key also matches if its leaf (last segment after _ - . / \ or
+    //              space) equals a configured key — catches nested fields like
+    //              `dwfrm_..._addressFields_email` (leaf `email`). Broader; defaults to false.
+    public function __construct(Keys|string $keys, ?string $redactWith = null, bool $hashEmails = false, bool $matchLeaf = false);
     public function updateKeys(): void;
     public function anonymizeObject(object|array $data): object|array;
 }
@@ -61,6 +64,9 @@ Your API endpoint must return:
 }
 ```
 Keys with `[]` suffix indicate array fields that should have all elements anonymized.
+
+Key matching is case-insensitive: both the configured keys and the data field names are
+compared in lower case (so `Email`, `C_AdyenLog`, etc. match regardless of case).
 
 ## Anonymization Rules
 
@@ -91,6 +97,13 @@ By default, matched values are masked:
   ```php
   $anonymizer = new Anonymizer($keys, null, true);
   "john@example.com" → "836f82db99121b3481011f16b49dfa5fbc714a0d1b1b9f784a1ebbbf5b39577f"
+  ```
+
+- Leaf matching (`$matchLeaf`): also match a key by its trailing segment, so deeply
+  nested form fields are covered without listing every variant
+  ```php
+  $anonymizer = new Anonymizer($keys /* incl. "email" */, null, true, true);
+  "dwfrm_shippingDS_shippingAddress_addressFields_email" matches via leaf "email"
   ```
 
 - Arrays: If key marked with [], all elements anonymized
