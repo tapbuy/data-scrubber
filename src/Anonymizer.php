@@ -13,6 +13,7 @@ class Anonymizer
     private Keys $keysObject;
     private ?string $redactWith;
     private bool $hashEmails;
+    private bool $matchLeaf;
 
     /**
      * @param Keys|string $keys       A Keys instance or a URL string for backward compatibility
@@ -22,13 +23,24 @@ class Anonymizer
      * @param bool        $hashEmails When true, email values are replaced with their unsalted
      *                                SHA-256 hash (a stable, one-way identifier) instead of being
      *                                masked/redacted. Defaults to false.
+     * @param bool        $matchLeaf  When true, a key also matches if its leaf — the last segment
+     *                                after a `_`, `-`, `.`, `/`, `\` or space — equals a configured
+     *                                key. This catches nested/prefixed form fields like
+     *                                `dwfrm_..._addressFields_email` (leaf `email`) without listing
+     *                                every variant. Broader: a generic leaf such as `state` or `city`
+     *                                will match any `*_state` / `*_city` key. Defaults to false.
      */
-    public function __construct(Keys|string $keys, ?string $redactWith = null, bool $hashEmails = false)
-    {
+    public function __construct(
+        Keys|string $keys,
+        ?string $redactWith = null,
+        bool $hashEmails = false,
+        bool $matchLeaf = false
+    ) {
         $this->keysObject = $keys instanceof Keys ? $keys : new Keys($keys);
-        $this->keys = $this->keysObject->getKeys();
+        $this->keys = self::normalizeKeys($this->keysObject->getKeys());
         $this->redactWith = $redactWith;
         $this->hashEmails = $hashEmails;
+        $this->matchLeaf = $matchLeaf;
     }
 
     /**
@@ -37,7 +49,19 @@ class Anonymizer
     public function updateKeys(): void
     {
         $this->keysObject->fetchKeys();
-        $this->keys = $this->keysObject->getKeys();
+        $this->keys = self::normalizeKeys($this->keysObject->getKeys());
+    }
+
+    /**
+     * Lower-case the key list so matching is case-insensitive: the data side is already
+     * lower-cased before comparison, so a key like "C_AdyenLog" would otherwise never match.
+     *
+     * @param array<int, mixed> $keys
+     * @return string[]
+     */
+    private static function normalizeKeys(array $keys): array
+    {
+        return array_map(static fn ($key): string => strtolower((string) $key), $keys);
     }
 
     /**
@@ -141,11 +165,36 @@ class Anonymizer
     }
 
     /**
-     * Check whether a plain key matches any entry in the anonymization key list.
+     * Check whether a plain key matches any entry in the anonymization key list,
+     * either by its full (normalized) name or — when leaf matching is enabled — by its
+     * trailing segment.
      */
     private function isKeyMatch(string $key): bool
     {
-        return in_array(strtolower(str_replace('[]', '', $key)), $this->keys, true);
+        $normalized = strtolower(str_replace('[]', '', $key));
+        if (in_array($normalized, $this->keys, true)) {
+            return true;
+        }
+
+        if ($this->matchLeaf) {
+            $leaf = $this->leafOf($normalized);
+            if ($leaf !== $normalized && in_array($leaf, $this->keys, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The trailing segment of a key, after the last `_`, `-`, `.`, `/`, `\` or space.
+     */
+    private function leafOf(string $normalizedKey): string
+    {
+        $parts = preg_split('#[_\-./\\\\ ]+#', $normalizedKey);
+        $leaf = end($parts);
+
+        return ($leaf === false || $leaf === '') ? $normalizedKey : $leaf;
     }
 
     /**

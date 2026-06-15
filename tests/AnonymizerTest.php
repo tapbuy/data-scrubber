@@ -238,6 +238,66 @@ class AnonymizerTest extends TestCase
         $this->assertSame(str_repeat('*', strlen('John')), $result->FIRST_NAME);
     }
 
+    public function testKeyListIsMatchedCaseInsensitively(): void
+    {
+        // Mixed-case keys from the API must still match (the data side is lower-cased,
+        // so the key list has to be lower-cased too).
+        $anonymizer = $this->createAnonymizerWithKeys(['C_AdyenLog', '_App\\Entity\\Guest_email']);
+        $data = (object) ['c_adyenLog' => 'secret', '_App\\Entity\\Guest_email' => 'a@b.com'];
+        $result = $anonymizer->anonymizeObject($data);
+
+        $this->assertSame(str_repeat('*', strlen('secret')), $result->c_adyenLog);
+        $this->assertSame(str_repeat('*', strlen('a@b.com')), $result->{'_App\\Entity\\Guest_email'});
+    }
+
+    // ── Leaf matching ───────────────────────────────────────────────────
+
+    private function createLeafAnonymizer(array $keys): Anonymizer
+    {
+        $keysMock = $this->createMock(Keys::class);
+        $keysMock->method('getKeys')->willReturn($keys);
+
+        // hashEmails + matchLeaf on (the record-style configuration).
+        return new Anonymizer($keysMock, null, true, true);
+    }
+
+    public function testLeafMatchAnonymizesNestedFormField(): void
+    {
+        // Keys as the /scrubbing-keys endpoint serves them (snake_case already expanded to
+        // the nospace 'firstname' variant); the lib matches, it does not expand.
+        $anonymizer = $this->createLeafAnonymizer(['email', 'firstname', 'password']);
+        $data = (object) [
+            'dwfrm_shippingDS_shippingAddress_addressFields_email' => 'a@b.com',
+            'dwfrm_profileDS_customer_firstName' => 'John',
+            'dwfrm_profileDS_login_password' => 's3cret',
+        ];
+        $result = $anonymizer->anonymizeObject($data);
+
+        $this->assertSame(hash('sha256', 'a@b.com'), $result->dwfrm_shippingDS_shippingAddress_addressFields_email);
+        $this->assertSame(str_repeat('*', strlen('John')), $result->dwfrm_profileDS_customer_firstName);
+        $this->assertSame(str_repeat('*', strlen('s3cret')), $result->dwfrm_profileDS_login_password);
+    }
+
+    public function testLeafMatchIsOffByDefault(): void
+    {
+        // Without matchLeaf, a prefixed key must NOT match.
+        $anonymizer = $this->createAnonymizerWithKeys(['email']);
+        $data = (object) ['some_prefix_email' => 'a@b.com'];
+        $result = $anonymizer->anonymizeObject($data);
+
+        $this->assertSame('a@b.com', $result->some_prefix_email);
+    }
+
+    public function testLeafMatchLeavesNonLeafKeysUntouched(): void
+    {
+        // 'product' is the leaf here; only 'email' is configured, so nothing matches.
+        $anonymizer = $this->createLeafAnonymizer(['email']);
+        $data = (object) ['catalog_product' => 'Widget'];
+        $result = $anonymizer->anonymizeObject($data);
+
+        $this->assertSame('Widget', $result->catalog_product);
+    }
+
     // ── Nested object recursion ─────────────────────────────────────────
 
     public function testAnonymizesNestedObjects(): void
