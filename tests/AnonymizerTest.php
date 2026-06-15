@@ -24,7 +24,8 @@ class AnonymizerTest extends TestCase
             'user_agent[]',
         ]);
 
-        $this->anonymizer = new Anonymizer($keysMock);
+        // Hash emails + mask everything else (the record-style configuration).
+        $this->anonymizer = new Anonymizer($keysMock, null, true);
     }
 
     private function createAnonymizerWithKeys(array $keys): Anonymizer
@@ -35,14 +36,113 @@ class AnonymizerTest extends TestCase
         return new Anonymizer($keysMock);
     }
 
+    private function createRedactingAnonymizer(array $keys, ?string $redactWith = Anonymizer::REDACTED): Anonymizer
+    {
+        $keysMock = $this->createMock(Keys::class);
+        $keysMock->method('getKeys')->willReturn($keys);
+
+        // Redact non-email values + hash emails (the record-style configuration).
+        return new Anonymizer($keysMock, $redactWith, true);
+    }
+
     // ── String anonymization ────────────────────────────────────────────
 
     public function testAnonymizesStringValueMatchingKey(): void
     {
+        $data = (object) ['first_name' => 'John Doe'];
+        $result = $this->anonymizer->anonymizeObject($data);
+
+        $this->assertSame(str_repeat('*', strlen('John Doe')), $result->first_name);
+    }
+
+    // ── Email hashing ───────────────────────────────────────────────────
+
+    public function testHashesEmailValueMatchingKey(): void
+    {
         $data = (object) ['email' => 'john@example.com'];
         $result = $this->anonymizer->anonymizeObject($data);
 
+        $this->assertSame(hash('sha256', 'john@example.com'), $result->email);
+    }
+
+    public function testEmailHashIsDeterministic(): void
+    {
+        $first = $this->anonymizer->anonymizeObject((object) ['email' => 'john@example.com']);
+        $second = $this->anonymizer->anonymizeObject((object) ['email' => 'john@example.com']);
+
+        $this->assertSame($first->email, $second->email);
+    }
+
+    public function testMasksNonEmailStringUnderMatchingKey(): void
+    {
+        // A matched key whose value is not an email is still masked, not hashed.
+        $data = (object) ['email' => 'not-an-email'];
+        $result = $this->anonymizer->anonymizeObject($data);
+
+        $this->assertSame(str_repeat('*', strlen('not-an-email')), $result->email);
+    }
+
+    public function testDoesNotHashEmailWhenHashingDisabled(): void
+    {
+        // Default constructor: hashing off -> email is masked, not hashed.
+        $anonymizer = $this->createAnonymizerWithKeys(['email']);
+        $result = $anonymizer->anonymizeObject((object) ['email' => 'john@example.com']);
+
         $this->assertSame(str_repeat('*', strlen('john@example.com')), $result->email);
+    }
+
+    public function testRedactsEmailWhenHashingDisabled(): void
+    {
+        $keysMock = $this->createMock(Keys::class);
+        $keysMock->method('getKeys')->willReturn(['email']);
+        $anonymizer = new Anonymizer($keysMock, Anonymizer::REDACTED);
+
+        $result = $anonymizer->anonymizeObject((object) ['email' => 'john@example.com']);
+
+        $this->assertSame(Anonymizer::REDACTED, $result->email);
+    }
+
+    // ── Redaction mode (placeholder instead of masking) ─────────────────
+
+    public function testRedactsStringWithPlaceholderInsteadOfMasking(): void
+    {
+        $anonymizer = $this->createRedactingAnonymizer(['first_name']);
+        $result = $anonymizer->anonymizeObject((object) ['first_name' => 'John Doe']);
+
+        $this->assertSame(Anonymizer::REDACTED, $result->first_name);
+    }
+
+    public function testRedactsNumericValueWithPlaceholder(): void
+    {
+        $anonymizer = $this->createRedactingAnonymizer(['phone']);
+        $result = $anonymizer->anonymizeObject((object) ['phone' => 12345]);
+
+        $this->assertSame(Anonymizer::REDACTED, $result->phone);
+    }
+
+    public function testRedactModeStillHashesEmails(): void
+    {
+        $anonymizer = $this->createRedactingAnonymizer(['email']);
+        $result = $anonymizer->anonymizeObject((object) ['email' => 'john@example.com']);
+
+        $this->assertSame(hash('sha256', 'john@example.com'), $result->email);
+    }
+
+    public function testRedactsWithCustomPlaceholder(): void
+    {
+        $anonymizer = $this->createRedactingAnonymizer(['first_name'], '[hidden]');
+        $result = $anonymizer->anonymizeObject((object) ['first_name' => 'John']);
+
+        $this->assertSame('[hidden]', $result->first_name);
+    }
+
+    public function testLeavesNonMatchingKeysUntouchedInRedactMode(): void
+    {
+        $anonymizer = $this->createRedactingAnonymizer(['first_name']);
+        $result = $anonymizer->anonymizeObject((object) ['product_name' => 'Widget', 'quantity' => 5]);
+
+        $this->assertSame('Widget', $result->product_name);
+        $this->assertSame(5, $result->quantity);
     }
 
     public function testAnonymizesEmptyStringValue(): void
@@ -134,7 +234,7 @@ class AnonymizerTest extends TestCase
         $data = (object) ['Email' => 'test@test.com', 'FIRST_NAME' => 'John'];
         $result = $this->anonymizer->anonymizeObject($data);
 
-        $this->assertSame(str_repeat('*', strlen('test@test.com')), $result->Email);
+        $this->assertSame(hash('sha256', 'test@test.com'), $result->Email);
         $this->assertSame(str_repeat('*', strlen('John')), $result->FIRST_NAME);
     }
 
@@ -152,7 +252,7 @@ class AnonymizerTest extends TestCase
 
         $result = $this->anonymizer->anonymizeObject($data);
 
-        $this->assertSame(str_repeat('*', strlen('a@b.com')), $result->user->email);
+        $this->assertSame(hash('sha256', 'a@b.com'), $result->user->email);
         $this->assertSame(str_repeat('*', strlen('Alice')), $result->user->first_name);
         $this->assertSame('Widget', $result->product_name);
     }
@@ -171,7 +271,7 @@ class AnonymizerTest extends TestCase
 
         $result = $this->anonymizer->anonymizeObject($data);
 
-        $this->assertSame(str_repeat('*', strlen('x@y.com')), $result['customer']['email']);
+        $this->assertSame(hash('sha256', 'x@y.com'), $result['customer']['email']);
         $this->assertSame(str_repeat('*', strlen('Doe')), $result['customer']['last_name']);
         $this->assertSame('ABC-123', $result['order_ref']);
     }
@@ -189,8 +289,8 @@ class AnonymizerTest extends TestCase
 
         $result = $this->anonymizer->anonymizeObject($data);
 
-        $this->assertSame(str_repeat('*', strlen('a@a.com')), $result->customers[0]->email);
-        $this->assertSame(str_repeat('*', strlen('b@b.com')), $result->customers[1]->email);
+        $this->assertSame(hash('sha256', 'a@a.com'), $result->customers[0]->email);
+        $this->assertSame(hash('sha256', 'b@b.com'), $result->customers[1]->email);
     }
 
     // ── Array key matching (key[] pattern) ──────────────────────────────
@@ -230,7 +330,7 @@ class AnonymizerTest extends TestCase
         $result = $this->anonymizer->anonymizeObject($data);
 
         // items[] is not in keys, so it's recursed into, not array-anonymized
-        $this->assertSame(str_repeat('*', strlen('x@y.com')), $result->items[0]->email);
+        $this->assertSame(hash('sha256', 'x@y.com'), $result->items[0]->email);
         $this->assertSame('SKU1', $result->items[0]->sku);
     }
 
@@ -258,7 +358,7 @@ class AnonymizerTest extends TestCase
         $data = (object) ['email[]' => 'test@test.com'];
         $result = $this->anonymizer->anonymizeObject($data);
 
-        $this->assertSame(str_repeat('*', strlen('test@test.com')), $result->{'email[]'});
+        $this->assertSame(hash('sha256', 'test@test.com'), $result->{'email[]'});
     }
 
     // ── updateKeys ──────────────────────────────────────────────────────
@@ -276,12 +376,12 @@ class AnonymizerTest extends TestCase
 
         $keysMock->expects($this->once())->method('fetchKeys');
 
-        $anonymizer = new Anonymizer($keysMock);
+        $anonymizer = new Anonymizer($keysMock, null, true);
 
         // Before update — only 'email' is matched
         $data = (object) ['email' => 'a@b.com', 'phone' => '1234'];
         $result = $anonymizer->anonymizeObject($data);
-        $this->assertSame(str_repeat('*', strlen('a@b.com')), $result->email);
+        $this->assertSame(hash('sha256', 'a@b.com'), $result->email);
         $this->assertSame('1234', $result->phone); // not yet in keys
 
         // After update — 'phone' should also be matched
@@ -304,7 +404,7 @@ class AnonymizerTest extends TestCase
 
         $result = $this->anonymizer->anonymizeObject($data);
 
-        $this->assertSame(str_repeat('*', strlen('john@doe.com')), $result->email);
+        $this->assertSame(hash('sha256', 'john@doe.com'), $result->email);
         $this->assertSame(str_repeat('*', strlen('John')), $result->first_name);
         $this->assertSame(str_repeat('*', strlen('Doe')), $result->last_name);
         $this->assertSame(str_repeat('*', strlen('s3cr3t')), $result->password);
@@ -328,7 +428,7 @@ class AnonymizerTest extends TestCase
         $result = $this->anonymizer->anonymizeObject($data);
 
         $this->assertSame(
-            str_repeat('*', strlen('deep@test.com')),
+            hash('sha256', 'deep@test.com'),
             $result['level1']['level2']['level3']['email']
         );
     }

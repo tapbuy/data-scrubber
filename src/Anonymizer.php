@@ -6,16 +6,29 @@ namespace Tapbuy\DataScrubber;
 
 class Anonymizer
 {
+    /** Conventional placeholder when redacting instead of masking; delimited so it's easy to spot. */
+    public const REDACTED = '<REDACTED>';
+
     private array $keys;
     private Keys $keysObject;
+    private ?string $redactWith;
+    private bool $hashEmails;
 
     /**
-     * @param Keys|string $keys A Keys instance or a URL string for backward compatibility
+     * @param Keys|string $keys       A Keys instance or a URL string for backward compatibility
+     * @param string|null $redactWith When null (default), matched values are masked with `*` of the
+     *                                same length (strings) / randomized (numbers). When set (e.g.
+     *                                self::REDACTED), they are replaced wholesale with this string.
+     * @param bool        $hashEmails When true, email values are replaced with their unsalted
+     *                                SHA-256 hash (a stable, one-way identifier) instead of being
+     *                                masked/redacted. Defaults to false.
      */
-    public function __construct(Keys|string $keys)
+    public function __construct(Keys|string $keys, ?string $redactWith = null, bool $hashEmails = false)
     {
         $this->keysObject = $keys instanceof Keys ? $keys : new Keys($keys);
         $this->keys = $this->keysObject->getKeys();
+        $this->redactWith = $redactWith;
+        $this->hashEmails = $hashEmails;
     }
 
     /**
@@ -76,16 +89,27 @@ class Anonymizer
     }
 
     /**
-     * Anonymize a scalar value preserving its type and length.
+     * Anonymize a scalar value.
+     *
+     * When email hashing is enabled, email addresses are replaced with their unsalted
+     * SHA-256 hash so the value stays a stable, one-way identifier (a record stays
+     * findable from an email without storing the address). Every other matched value
+     * — and emails when hashing is disabled — is either redacted with a fixed
+     * placeholder (when $redactWith is set) or, by default, masked with `*` of the same
+     * length for strings and randomized in place for numbers.
      */
     private function anonymizeValue(mixed $value): mixed
     {
         if (is_string($value)) {
-            return str_repeat('*', mb_strlen($value));
+            if ($this->hashEmails && $value !== '' && filter_var($value, FILTER_VALIDATE_EMAIL) !== false) {
+                return hash('sha256', $value);
+            }
+
+            return $this->redactWith ?? str_repeat('*', mb_strlen($value));
         }
 
         if (is_int($value) || is_float($value)) {
-            return $this->anonymizeNumeric($value);
+            return $this->redactWith ?? $this->anonymizeNumeric($value);
         }
 
         return $value;
