@@ -14,6 +14,8 @@ class Anonymizer
     private ?string $redactWith;
     private bool $hashEmails;
     private bool $matchLeaf;
+    private bool $recurseJsonStrings;
+    private bool $redactTokens;
 
     /**
      * @param Keys|string $keys       A Keys instance or a URL string for backward compatibility
@@ -29,18 +31,30 @@ class Anonymizer
      *                                `dwfrm_..._addressFields_email` (leaf `email`) without listing
      *                                every variant. Broader: a generic leaf such as `state` or `city`
      *                                will match any `*_state` / `*_city` key. Defaults to false.
+     * @param bool $recurseJsonStrings When true, a string value that is itself JSON (an object or
+     *                                array) is decoded, anonymized with the same settings, and
+     *                                re-encoded — so PII inside embedded JSON blobs (e.g. analytics
+     *                                dataLayers) is not left opaque. Defaults to false.
+     * @param bool $redactTokens      When true, any string value that looks like a credential — a
+     *                                JWT or a `Bearer <jwt>` header — is redacted regardless of its
+     *                                field name (replaced with $redactWith or self::REDACTED, never
+     *                                length-masked). Defaults to false.
      */
     public function __construct(
         Keys|string $keys,
         ?string $redactWith = null,
         bool $hashEmails = false,
-        bool $matchLeaf = false
+        bool $matchLeaf = false,
+        bool $recurseJsonStrings = false,
+        bool $redactTokens = false
     ) {
         $this->keysObject = $keys instanceof Keys ? $keys : new Keys($keys);
         $this->keys = self::normalizeKeys($this->keysObject->getKeys());
         $this->redactWith = $redactWith;
         $this->hashEmails = $hashEmails;
         $this->matchLeaf = $matchLeaf;
+        $this->recurseJsonStrings = $recurseJsonStrings;
+        $this->redactTokens = $redactTokens;
     }
 
     /**
@@ -80,15 +94,7 @@ class Anonymizer
         if (is_object($data)) {
             $anonymizedData = new \stdClass();
             foreach ($data as $key => $value) {
-                if (is_array($value) && $this->isArrayKeyMatch($key)) {
-                    $anonymizedData->$key = $this->anonymizeArray($value);
-                } elseif (is_object($value) || is_array($value)) {
-                    $anonymizedData->$key = $this->anonymize($value);
-                } elseif ($this->isKeyMatch($key)) {
-                    $anonymizedData->$key = $this->anonymizeValue($value);
-                } else {
-                    $anonymizedData->$key = $value;
-                }
+                $anonymizedData->$key = $this->anonymizeEntry((string) $key, $value);
             }
             return $anonymizedData;
         }
@@ -96,20 +102,50 @@ class Anonymizer
         if (is_array($data)) {
             $result = [];
             foreach ($data as $key => $value) {
-                if (is_array($value) && $this->isArrayKeyMatch((string) $key)) {
-                    $result[$key] = $this->anonymizeArray($value);
-                } elseif (is_object($value) || is_array($value)) {
-                    $result[$key] = $this->anonymize($value);
-                } elseif ($this->isKeyMatch((string) $key)) {
-                    $result[$key] = $this->anonymizeValue($value);
-                } else {
-                    $result[$key] = $value;
-                }
+                $result[$key] = $this->anonymizeEntry((string) $key, $value);
             }
             return $result;
         }
 
         return $data;
+    }
+
+    /**
+     * Anonymize a single key/value entry, applying (in order): array-key matching, recursion into
+     * nested structures, key-based value anonymization, embedded-JSON recursion, and token redaction.
+     */
+    private function anonymizeEntry(string $key, mixed $value): mixed
+    {
+        if (is_array($value) && $this->isArrayKeyMatch($key)) {
+            return $this->anonymizeArray($value);
+        }
+        if (is_object($value) || is_array($value)) {
+            return $this->anonymize($value);
+        }
+        if ($this->isKeyMatch($key)) {
+            return $this->anonymizeValue($value);
+        }
+        if (is_string($value) && $value !== '') {
+            if ($this->recurseJsonStrings && ($value[0] === '{' || $value[0] === '[')) {
+                $decoded = json_decode($value, true);
+                if (is_array($decoded)) {
+                    return json_encode($this->anonymize($decoded), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                }
+            }
+            if ($this->redactTokens && $this->isSecretToken($value)) {
+                return $this->redactWith ?? self::REDACTED;
+            }
+        }
+        return $value;
+    }
+
+    /**
+     * Whether a string looks like a session credential: a JWT, alone or as a "Bearer <jwt>" value.
+     */
+    private function isSecretToken(string $value): bool
+    {
+        return (bool) preg_match('/^Bearer\s+eyJ/i', $value)
+            || (bool) preg_match('/^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\./', $value);
     }
 
     /**

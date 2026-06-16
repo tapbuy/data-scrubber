@@ -298,6 +298,63 @@ class AnonymizerTest extends TestCase
         $this->assertSame('Widget', $result->catalog_product);
     }
 
+    // ── Embedded JSON recursion ─────────────────────────────────────────
+
+    public function testRecursesIntoEmbeddedJsonString(): void
+    {
+        $keysMock = $this->createMock(Keys::class);
+        $keysMock->method('getKeys')->willReturn(['email', 'guest_id']);
+        $anonymizer = new Anonymizer($keysMock, null, true, false, /*recurseJsonStrings*/ true);
+
+        // A field whose value is itself a JSON string carrying PII.
+        $blob = json_encode(['guest_id' => 'g-123', 'email' => 'a@b.com', 'page' => 'cart']);
+        $result = $anonymizer->anonymizeObject((object) ['analytics' => $blob]);
+
+        $decoded = json_decode($result->analytics, true);
+        $this->assertSame(str_repeat('*', strlen('g-123')), $decoded['guest_id']);
+        $this->assertSame(hash('sha256', 'a@b.com'), $decoded['email']);
+        $this->assertSame('cart', $decoded['page']); // non-PII preserved
+    }
+
+    public function testLeavesEmbeddedJsonOpaqueWhenDisabled(): void
+    {
+        $anonymizer = $this->createAnonymizerWithKeys(['email']);
+        $blob = json_encode(['email' => 'a@b.com']);
+        $result = $anonymizer->anonymizeObject((object) ['analytics' => $blob]);
+
+        $this->assertSame($blob, $result->analytics); // untouched
+    }
+
+    // ── Token redaction ─────────────────────────────────────────────────
+
+    public function testRedactsBearerAndRawJwtRegardlessOfKey(): void
+    {
+        $keysMock = $this->createMock(Keys::class);
+        $keysMock->method('getKeys')->willReturn([]); // no keys configured
+        $anonymizer = new Anonymizer($keysMock, Anonymizer::REDACTED, false, false, false, /*redactTokens*/ true);
+
+        $jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc123';
+        $data = (object) [
+            'authorization' => 'Bearer ' . $jwt,
+            'raw' => $jwt,
+            'note' => 'just text',
+        ];
+        $result = $anonymizer->anonymizeObject($data);
+
+        $this->assertSame(Anonymizer::REDACTED, $result->authorization);
+        $this->assertSame(Anonymizer::REDACTED, $result->raw);
+        $this->assertSame('just text', $result->note); // ordinary text untouched
+    }
+
+    public function testTokenRedactionOffByDefault(): void
+    {
+        $anonymizer = $this->createAnonymizerWithKeys([]);
+        $data = (object) ['authorization' => 'Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.x'];
+        $result = $anonymizer->anonymizeObject($data);
+
+        $this->assertStringStartsWith('Bearer eyJ', $result->authorization); // untouched
+    }
+
     // ── Nested object recursion ─────────────────────────────────────────
 
     public function testAnonymizesNestedObjects(): void
