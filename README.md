@@ -39,7 +39,11 @@ class Anonymizer {
     // $matchLeaf:  when true, a key also matches if its leaf (last segment after _ - . / \ or
     //              space) equals a configured key — catches nested fields like
     //              `dwfrm_..._addressFields_email` (leaf `email`). Broader; defaults to false.
-    public function __construct(Keys|string $keys, ?string $redactWith = null, bool $hashEmails = false, bool $matchLeaf = false);
+    // $recurseJsonStrings: when true, a string value that is itself JSON is decoded, anonymized
+    //              with the same settings, and re-encoded (catches PII inside embedded JSON blobs).
+    // $redactTokens: when true, any value that looks like a credential (JWT, or `Bearer <jwt>`) is
+    //              redacted regardless of field name. Defaults to false.
+    public function __construct(Keys|string $keys, ?string $redactWith = null, bool $hashEmails = false, bool $matchLeaf = false, bool $recurseJsonStrings = false, bool $redactTokens = false);
     public function updateKeys(): void;
     public function anonymizeObject(object|array $data): object|array;
 }
@@ -104,6 +108,22 @@ By default, matched values are masked:
   ```php
   $anonymizer = new Anonymizer($keys /* incl. "email" */, null, true, true);
   "dwfrm_shippingDS_shippingAddress_addressFields_email" matches via leaf "email"
+  ```
+
+- Embedded JSON (`$recurseJsonStrings`): when a string value is itself a JSON object or
+  array, it is decoded, anonymized with the same settings, and re-encoded — so PII inside
+  embedded JSON blobs (e.g. analytics dataLayers) is not left opaque
+  ```php
+  $anonymizer = new Anonymizer($keys /* incl. "email" */, null, false, false, true);
+  '{"email":"john@example.com"}' → '{"email":"****************"}'
+  ```
+
+- Token redaction (`$redactTokens`): any string value that looks like a credential — a JWT
+  or a `Bearer <jwt>` header — is redacted regardless of field name (replaced with
+  `$redactWith` or `<REDACTED>`, never length-masked)
+  ```php
+  $anonymizer = new Anonymizer($keys, null, false, false, false, true);
+  "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc" → "<REDACTED>"
   ```
 
 - Arrays: If key marked with [], all elements anonymized
